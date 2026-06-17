@@ -1,0 +1,52 @@
+# Runs the private Cluster repo's DAILY jobs (scripts/daily.ts) on a public-repo
+# runner. Companion to pipeline.yml (hourly refresh). Chain: cluster -> briefing
+# -> digest. Digest is SKIPPED here (--skip=digest) until it's explicitly enabled:
+# it sends real subscriber emails and needs RESEND_FROM_ADDRESS (not yet set).
+# To enable digest later: add the RESEND_FROM_ADDRESS secret and drop --skip.
+name: daily
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # daily at 08:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: daily
+  cancel-in-progress: true
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25 # npm ci (~3m) + AI-paced cluster-analyze + briefing
+    steps:
+      - name: Check out private Cluster repo
+        uses: actions/checkout@v4
+        with:
+          repository: Aramide-TechExpert/Cluster
+          token: ${{ secrets.CLUSTER_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache node_modules
+        id: modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: pipeline-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install deps (cache miss only)
+        if: steps.modules.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund
+
+      - name: Run daily jobs (cluster + briefing; digest skipped)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: node --import tsx scripts/daily.ts --skip=digest

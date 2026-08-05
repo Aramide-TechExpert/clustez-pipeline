@@ -42,6 +42,8 @@ jobs:
 
       - name: Run pipeline
         env:
+          # 738-feed ingest peaks past Node's 4GB default heap (OOM 2026-08-05)
+          NODE_OPTIONS: "--max-old-space-size=6144"
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}

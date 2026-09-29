@@ -9,6 +9,11 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+# Never run two keepalives at once — a racing pair caused a non-fast-forward
+# push rejection on 2026-09-29.
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
 jobs:
   keepalive:
     runs-on: ubuntu-latest
@@ -18,4 +23,10 @@ jobs:
           git config user.name "clustez-keepalive"
           git config user.email "actions@users.noreply.github.com"
           git commit --allow-empty -m "chore: keepalive — reset 60-day scheduled-workflow inactivity timer"
-          git push
+          # Rebase-and-retry: another workflow may push between checkout and here.
+          for i in 1 2 3; do
+            git push && exit 0
+            git pull --rebase origin main
+          done
+          echo "keepalive push failed after 3 attempts" >&2
+          exit 1

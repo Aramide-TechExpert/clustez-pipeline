@@ -49,4 +49,6 @@ jobs:
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Native push (FCM HTTP v1) for the push-breaking / push-fresh steps.
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: node --import tsx scripts/pipeline.ts

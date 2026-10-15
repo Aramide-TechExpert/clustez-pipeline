@@ -7,7 +7,11 @@ name: pipeline
 
 on:
   schedule:
-    - cron: "7 * * * *" # hourly at :07
+    # Two slots per hour: GitHub's shared cron scheduler drops/drifts runs
+    # (5h gap observed 2026-10-15) — doubling the slots roughly doubles the
+    # chance each hour actually ingests (and therefore notifies). The
+    # concurrency group below keeps overlapping runs from stacking.
+    - cron: "7,37 * * * *"
   workflow_dispatch: {}
 
 concurrency:

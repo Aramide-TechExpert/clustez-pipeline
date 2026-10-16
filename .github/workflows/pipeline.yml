@@ -61,7 +61,8 @@ jobs:
   # Self-chaining: GitHub's cron scheduler delivers our :07/:37 slots only
   # every 3-5 HOURS in practice (free-tier deprioritization, observed
   # 2026-10-15/16). Each successful run therefore dispatches the next one
-  # itself (~10 min after the pipeline finishes → ~30 min start-to-start).
+  # itself shortly after finishing — cadence ≈ one pipeline duration (~16-22 min),
+  # the physical floor for a full ingest+AI cycle.
   # The cron slots remain as restart-insurance if the chain ever breaks
   # (a failed refresh ends the chain on purpose — no failure loops).
   chain:
@@ -77,5 +78,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
         run: |
-          sleep 600
+          sleep 90
           gh workflow run pipeline.yml -R Aramide-TechExpert/clustez-pipeline

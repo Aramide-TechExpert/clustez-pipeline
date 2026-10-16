@@ -14,12 +14,13 @@ on:
     - cron: "7,37 * * * *"
   workflow_dispatch: {}
 
-concurrency:
-  group: pipeline
-  cancel-in-progress: true
-
 jobs:
   refresh:
+    # Job-level (not workflow-level) so the `chain` job below survives when a
+    # newer run supersedes this one's refresh.
+    concurrency:
+      group: pipeline
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 20 # cold run = npm ci (~3m) + AI-paced analyze (~3m) + ingest
     steps:
@@ -56,3 +57,25 @@ jobs:
           # Native push (FCM HTTP v1) for the push-breaking / push-fresh steps.
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: node --import tsx scripts/pipeline.ts
+
+  # Self-chaining: GitHub's cron scheduler delivers our :07/:37 slots only
+  # every 3-5 HOURS in practice (free-tier deprioritization, observed
+  # 2026-10-15/16). Each successful run therefore dispatches the next one
+  # itself (~10 min after the pipeline finishes → ~30 min start-to-start).
+  # The cron slots remain as restart-insurance if the chain ever breaks
+  # (a failed refresh ends the chain on purpose — no failure loops).
+  chain:
+    needs: refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only one live chainer: a newer run's chainer replaces a sleeping one.
+    concurrency:
+      group: pipeline-chain
+      cancel-in-progress: true
+    steps:
+      - name: Sleep, then dispatch the next run
+        env:
+          GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
+        run: |
+          sleep 600
+          gh workflow run pipeline.yml -R Aramide-TechExpert/clustez-pipeline

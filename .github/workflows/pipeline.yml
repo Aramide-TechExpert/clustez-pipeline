@@ -60,13 +60,18 @@ jobs:
 
   # Self-chaining: GitHub's cron scheduler delivers our :07/:37 slots only
   # every 3-5 HOURS in practice (free-tier deprioritization, observed
-  # 2026-10-15/16). Each successful run therefore dispatches the next one
-  # itself shortly after finishing — cadence ≈ one pipeline duration (~16-22 min),
-  # the physical floor for a full ingest+AI cycle.
-  # The cron slots remain as restart-insurance if the chain ever breaks
-  # (a failed refresh ends the chain on purpose — no failure loops).
+  # 2026-10-15/16). Each run therefore dispatches the next one itself shortly
+  # after finishing — cadence ≈ one pipeline duration, the physical floor for
+  # a full ingest+AI cycle. The cron slots remain as restart-insurance.
+  #
+  # Hardened 2026-10-18 after a 12h push outage: (1) the chain now survives a
+  # FAILED refresh (transient crashes self-heal instead of killing the
+  # heartbeat), guarded by a 3-strike stop so persistent breakage can't loop
+  # forever; (2) the dispatch call retries — a single GitHub API i/o timeout
+  # broke the chain on 2026-10-17.
   chain:
     needs: refresh
+    if: ${{ always() && needs.refresh.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Only one live chainer: a newer run's chainer replaces a sleeping one.
@@ -78,5 +83,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
         run: |
+          # 3-strike stop: this refresh + the previous two all failed means
+          # something is persistently broken — stop chaining and leave
+          # restarts to the cron slots (which pick the chain back up once a
+          # run goes green). If the guard query itself fails, keep chaining.
+          if [ "${{ needs.refresh.result }}" = "failure" ]; then
+            prev=$(gh api "repos/${{ github.repository }}/actions/workflows/pipeline.yml/runs?status=completed&per_page=2" \
+              --jq '[.workflow_runs[].conclusion] | map(select(. == "failure")) | length' 2>/dev/null || echo 0)
+            if [ "$prev" = "2" ]; then
+              echo "3 consecutive failures — not chaining (cron remains as restart insurance)."
+              exit 0
+            fi
+          fi
           sleep 15
-          gh workflow run pipeline.yml -R Aramide-TechExpert/clustez-pipeline
+          for i in 1 2 3 4 5; do
+            gh workflow run pipeline.yml --ref main -R ${{ github.repository }} && exit 0
+            echo "dispatch attempt $i failed; retrying in 30s"
+            sleep 30
+          done
+          echo "all dispatch attempts failed"
+          exit 1

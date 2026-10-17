@@ -3,14 +3,20 @@
 # the pipeline was ~12 of the 14.4 Fluid Active CPU hours that got the Hobby
 # account paused. Logs here are public — the pipeline prints only step
 # counts/timings; secrets are masked by Actions.
+#
+# Self-healing design (hardened 2026-10-18 after a 12h push outage):
+#   1. A crashed run falls back to the LAST_GOOD_SHA repo variable and re-runs
+#      on the last code that worked — broken deploys degrade, never outage.
+#   2. The chain survives failed runs (3-strike stop guards against loops).
+#   3. Degraded/halted states open a GitHub issue (dedup lock + record) and
+#      push an ops alert to the owner's phone (scripts/ops-alert.mjs).
 name: pipeline
 
 on:
   schedule:
     # Two slots per hour: GitHub's shared cron scheduler drops/drifts runs
-    # (5h gap observed 2026-10-15) — doubling the slots roughly doubles the
-    # chance each hour actually ingests (and therefore notifies). The
-    # concurrency group below keeps overlapping runs from stacking.
+    # (5h gap observed 2026-10-15) — these are restart-insurance for the
+    # self-chain below, not the primary cadence.
     - cron: "7,37 * * * *"
   workflow_dispatch: {}
 
@@ -22,13 +28,30 @@ jobs:
       group: pipeline
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 20 # cold run = npm ci (~3m) + AI-paced analyze (~3m) + ingest
+    timeout-minutes: 30 # cold npm ci + AI-paced analyze; fallback re-run doubles it
+    env:
+      # 738-feed ingest peaks past Node's 4GB default heap (OOM 2026-08-05)
+      NODE_OPTIONS: "--max-old-space-size=6144"
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      # Native push (FCM HTTP v1) for the push-breaking / push-fresh steps.
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      ALERT_USER_ID: ${{ secrets.ALERT_USER_ID }}
+      GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
     steps:
       - name: Check out private Cluster repo
         uses: actions/checkout@v4
         with:
           repository: Aramide-TechExpert/Cluster
           token: ${{ secrets.CLUSTER_TOKEN }}
+
+      - name: Check out pipeline repo (ops scripts)
+        uses: actions/checkout@v4
+        with:
+          path: _ops
 
       - uses: actions/setup-node@v4
         with:
@@ -46,29 +69,53 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Run pipeline
-        env:
-          # 738-feed ingest peaks past Node's 4GB default heap (OOM 2026-08-05)
-          NODE_OPTIONS: "--max-old-space-size=6144"
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # Native push (FCM HTTP v1) for the push-breaking / push-fresh steps.
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        id: run_main
+        continue-on-error: true
         run: node --import tsx scripts/pipeline.ts
+
+      # Auto-rollback: a broken deploy of Cluster main must DEGRADE (run the
+      # last code that worked), never stop the news or the pushes.
+      - name: Fall back to last-good commit
+        id: fallback
+        if: steps.run_main.outcome == 'failure' && vars.LAST_GOOD_SHA != ''
+        run: |
+          if [ "${{ vars.LAST_GOOD_SHA }}" = "$(git rev-parse HEAD)" ]; then
+            echo "last-good == HEAD; nothing to fall back to"
+            exit 1
+          fi
+          git fetch --depth 1 origin ${{ vars.LAST_GOOD_SHA }}
+          git checkout ${{ vars.LAST_GOOD_SHA }}
+          npm ci --no-audit --no-fund
+          node --import tsx scripts/pipeline.ts
+
+      - name: Degraded alert (once, via issue as dedup lock)
+        if: steps.fallback.outcome == 'success'
+        run: |
+          open=$(gh issue list -R ${{ github.repository }} --state open --search "Pipeline degraded in:title" --json number --jq 'length' || echo 1)
+          if [ "$open" = "0" ]; then
+            gh issue create -R ${{ github.repository }} \
+              --title "⚠️ Pipeline degraded: main is broken, running last-good ${{ vars.LAST_GOOD_SHA }}" \
+              --body "Run #${{ github.run_number }}: \`main\` crashed; the cycle re-ran successfully on LAST_GOOD_SHA. News and pushes keep flowing on the old code until main is fixed. This issue auto-closes when a run goes green on main." || true
+            node _ops/scripts/ops-alert.mjs "Pipeline degraded" "Latest code is failing — news keeps flowing on the last good version. Fix main when you can." || true
+          fi
+
+      - name: Record last-good commit + close alert issues
+        if: steps.run_main.outcome == 'success'
+        run: |
+          gh variable set LAST_GOOD_SHA --body "$(git rev-parse HEAD)" -R ${{ github.repository }} || true
+          for n in $(gh issue list -R ${{ github.repository }} --state open --search "Pipeline in:title" --json number,title --jq '.[] | select(.title | test("Pipeline (degraded|halted)")) | .number'); do
+            gh issue close "$n" -R ${{ github.repository }} -c "Recovered: run #${{ github.run_number }} green on main." || true
+          done
+
+      - name: Fail the job when nothing ran
+        if: steps.run_main.outcome == 'failure' && steps.fallback.outcome == 'skipped'
+        run: exit 1
 
   # Self-chaining: GitHub's cron scheduler delivers our :07/:37 slots only
   # every 3-5 HOURS in practice (free-tier deprioritization, observed
   # 2026-10-15/16). Each run therefore dispatches the next one itself shortly
   # after finishing — cadence ≈ one pipeline duration, the physical floor for
   # a full ingest+AI cycle. The cron slots remain as restart-insurance.
-  #
-  # Hardened 2026-10-18 after a 12h push outage: (1) the chain now survives a
-  # FAILED refresh (transient crashes self-heal instead of killing the
-  # heartbeat), guarded by a 3-strike stop so persistent breakage can't loop
-  # forever; (2) the dispatch call retries — a single GitHub API i/o timeout
-  # broke the chain on 2026-10-17.
   chain:
     needs: refresh
     if: ${{ always() && needs.refresh.result != 'cancelled' }}
@@ -78,24 +125,40 @@ jobs:
     concurrency:
       group: pipeline-chain
       cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      ALERT_USER_ID: ${{ secrets.ALERT_USER_ID }}
     steps:
+      - uses: actions/checkout@v4 # ops-alert script
+
       - name: Sleep, then dispatch the next run
-        env:
-          GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
         run: |
           # 3-strike stop: this refresh + the previous two all failed means
-          # something is persistently broken — stop chaining and leave
-          # restarts to the cron slots (which pick the chain back up once a
-          # run goes green). If the guard query itself fails, keep chaining.
+          # something is persistently broken even for the rollback — stop
+          # chaining (cron slots restart once a fix lands), raise the alarm.
+          # If the guard query itself fails, keep chaining (fail open).
           if [ "${{ needs.refresh.result }}" = "failure" ]; then
             prev=$(gh api "repos/${{ github.repository }}/actions/workflows/pipeline.yml/runs?status=completed&per_page=2" \
               --jq '[.workflow_runs[].conclusion] | map(select(. == "failure")) | length' 2>/dev/null || echo 0)
             if [ "$prev" = "2" ]; then
-              echo "3 consecutive failures — not chaining (cron remains as restart insurance)."
+              echo "3 consecutive failures — halting chain (cron remains as restart insurance)."
+              open=$(gh issue list -R ${{ github.repository }} --state open --search "Pipeline halted in:title" --json number --jq 'length' || echo 1)
+              if [ "$open" = "0" ]; then
+                gh issue create -R ${{ github.repository }} \
+                  --title "🚨 Pipeline halted: 3 consecutive failures" \
+                  --body "Even the last-good rollback is failing — likely infra (Supabase/secrets/GitHub), not code. Chain stopped; cron slots keep retrying. This issue auto-closes when a run goes green." || true
+                node scripts/ops-alert.mjs "Pipeline HALTED" "News and alerts are down — 3 failed runs in a row, rollback included. Needs attention." || true
+              fi
               exit 0
             fi
           fi
           sleep 15
+          # Retry the dispatch: a single GitHub API i/o timeout broke the
+          # chain for 12h on 2026-10-17. --ref main also skips the
+          # default-branch lookup that timed out.
           for i in 1 2 3 4 5; do
             gh workflow run pipeline.yml --ref main -R ${{ github.repository }} && exit 0
             echo "dispatch attempt $i failed; retrying in 30s"

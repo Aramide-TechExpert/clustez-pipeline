@@ -1,0 +1,27 @@
+# Manual/reusable ops alert: pushes a notification to the OWNER's phone via
+# scripts/ops-alert.mjs. Used to test the alarm path end-to-end and available
+# to any future automation: gh workflow run ops-alert.yml -f title=... -f body=...
+name: ops-alert
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "Alert title"
+        required: true
+      body:
+        description: "Alert body"
+        required: true
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          ALERT_USER_ID: ${{ secrets.ALERT_USER_ID }}
+        run: node scripts/ops-alert.mjs "${{ inputs.title }}" "${{ inputs.body }}"

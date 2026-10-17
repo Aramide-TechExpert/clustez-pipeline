@@ -19,7 +19,10 @@ if (!FIREBASE_SERVICE_ACCOUNT || !NEXT_PUBLIC_SUPABASE_URL || !SUPABASE_SERVICE_
   console.error("ops-alert: missing env (FIREBASE_SERVICE_ACCOUNT / SUPABASE / ALERT_USER_ID) — not sending");
   process.exit(1);
 }
-const sa = JSON.parse(FIREBASE_SERVICE_ACCOUNT);
+// The secret is stored base64-encoded (same as the main pipeline consumes it);
+// accept raw JSON too.
+const rawSa = FIREBASE_SERVICE_ACCOUNT.trim();
+const sa = JSON.parse(rawSa.startsWith("{") ? rawSa : Buffer.from(rawSa, "base64").toString("utf8"));
 
 // OAuth2 access token via signed JWT grant (what firebase-admin does, minus the dependency).
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");

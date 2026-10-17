@@ -78,5 +78,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
         run: |
-          sleep 90
+          sleep 15
           gh workflow run pipeline.yml -R Aramide-TechExpert/clustez-pipeline

@@ -71,7 +71,9 @@ jobs:
       - name: Run pipeline
         id: run_main
         continue-on-error: true
-        run: node --import tsx scripts/pipeline.ts
+        run: |
+          set -o pipefail
+          node --import tsx scripts/pipeline.ts 2>&1 | tee pipeline.log
 
       # Auto-rollback: a broken deploy of Cluster main must DEGRADE (run the
       # last code that worked), never stop the news or the pushes.
@@ -106,6 +108,26 @@ jobs:
           for n in $(gh issue list -R ${{ github.repository }} --state open --search "Pipeline in:title" --json number,title --jq '.[] | select(.title | test("Pipeline (degraded|halted)")) | .number'); do
             gh issue close "$n" -R ${{ github.repository }} -c "Recovered: run #${{ github.run_number }} green on main." || true
           done
+
+      # Delivery watchdog: the pipeline prints PUSH_DELIVERY_STALLED when FCM
+      # sends succeed but the app's receipts (/api/push/receipt) stop — a
+      # display/transport failure the server can't otherwise see.
+      - name: Push delivery watchdog
+        if: always()
+        run: |
+          if grep -q "PUSH_DELIVERY_STALLED" pipeline.log 2>/dev/null; then
+            open=$(gh issue list -R ${{ github.repository }} --state open --search "Push delivery stalled in:title" --json number --jq 'length' || echo 1)
+            if [ "$open" = "0" ]; then
+              gh issue create -R ${{ github.repository }} \
+                --title "📵 Push delivery stalled" \
+                --body "FCM accepts every send but the device has posted no delivery receipts for 90+ minutes. Check the app / NSE / APNs path. Auto-closes when receipts resume." || true
+              node _ops/scripts/ops-alert.mjs "Push delivery stalled" "The server is sending but your device stopped acknowledging pushes. If THIS alert arrived, transport is alive - check the app." || true
+            fi
+          else
+            for n in $(gh issue list -R ${{ github.repository }} --state open --search "Push delivery stalled in:title" --json number --jq '.[].number' 2>/dev/null); do
+              gh issue close "$n" -R ${{ github.repository }} -c "Receipts flowing again (run #${{ github.run_number }})." || true
+            done
+          fi
 
       - name: Fail the job when nothing ran
         if: steps.run_main.outcome == 'failure' && steps.fallback.outcome == 'skipped'

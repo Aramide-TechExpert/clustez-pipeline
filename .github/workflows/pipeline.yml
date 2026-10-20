@@ -41,6 +41,9 @@ jobs:
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       ALERT_USER_ID: ${{ secrets.ALERT_USER_ID }}
       GH_TOKEN: ${{ secrets.CLUSTER_TOKEN }}
+      # Incident issues live in the PRIVATE backend repo — this pipeline repo
+      # is public and issue bodies describe internal state (owner 2026-10-20).
+      ALERT_REPO: Aramide-TechExpert/Cluster
     steps:
       - name: Check out private Cluster repo
         uses: actions/checkout@v4
@@ -93,9 +96,9 @@ jobs:
       - name: Degraded alert (once, via issue as dedup lock)
         if: steps.fallback.outcome == 'success'
         run: |
-          open=$(gh issue list -R ${{ github.repository }} --state open --search "Pipeline degraded in:title" --json number --jq 'length' || echo 1)
+          open=$(gh issue list -R $ALERT_REPO --state open --search "Pipeline degraded in:title" --json number --jq 'length' || echo 1)
           if [ "$open" = "0" ]; then
-            gh issue create -R ${{ github.repository }} \
+            gh issue create -R $ALERT_REPO \
               --title "⚠️ Pipeline degraded: main is broken, running last-good ${{ vars.LAST_GOOD_SHA }}" \
               --body "Run #${{ github.run_number }}: \`main\` crashed; the cycle re-ran successfully on LAST_GOOD_SHA. News and pushes keep flowing on the old code until main is fixed. This issue auto-closes when a run goes green on main." || true
             node _ops/scripts/ops-alert.mjs "Pipeline degraded" "Latest code is failing — news keeps flowing on the last good version. Fix main when you can." || true
@@ -105,8 +108,8 @@ jobs:
         if: steps.run_main.outcome == 'success'
         run: |
           gh variable set LAST_GOOD_SHA --body "$(git rev-parse HEAD)" -R ${{ github.repository }} || true
-          for n in $(gh issue list -R ${{ github.repository }} --state open --search "Pipeline in:title" --json number,title --jq '.[] | select(.title | test("Pipeline (degraded|halted)")) | .number'); do
-            gh issue close "$n" -R ${{ github.repository }} -c "Recovered: run #${{ github.run_number }} green on main." || true
+          for n in $(gh issue list -R $ALERT_REPO --state open --search "Pipeline in:title" --json number,title --jq '.[] | select(.title | test("Pipeline (degraded|halted)")) | .number'); do
+            gh issue close "$n" -R $ALERT_REPO -c "Recovered: run #${{ github.run_number }} green on main." || true
           done
 
       # Delivery watchdog: the pipeline prints PUSH_DELIVERY_STALLED when FCM
@@ -116,16 +119,16 @@ jobs:
         if: always()
         run: |
           if grep -q "PUSH_DELIVERY_STALLED" pipeline.log 2>/dev/null; then
-            open=$(gh issue list -R ${{ github.repository }} --state open --search "Push delivery stalled in:title" --json number --jq 'length' || echo 1)
+            open=$(gh issue list -R $ALERT_REPO --state open --search "Push delivery stalled in:title" --json number --jq 'length' || echo 1)
             if [ "$open" = "0" ]; then
-              gh issue create -R ${{ github.repository }} \
+              gh issue create -R $ALERT_REPO \
                 --title "📵 Push delivery stalled" \
                 --body "FCM accepts every send but the device has posted no delivery receipts for 90+ minutes. Check the app / NSE / APNs path. Auto-closes when receipts resume." || true
               node _ops/scripts/ops-alert.mjs "Push delivery stalled" "The server is sending but your device stopped acknowledging pushes. If THIS alert arrived, transport is alive - check the app." || true
             fi
           else
-            for n in $(gh issue list -R ${{ github.repository }} --state open --search "Push delivery stalled in:title" --json number --jq '.[].number' 2>/dev/null); do
-              gh issue close "$n" -R ${{ github.repository }} -c "Receipts flowing again (run #${{ github.run_number }})." || true
+            for n in $(gh issue list -R $ALERT_REPO --state open --search "Push delivery stalled in:title" --json number --jq '.[].number' 2>/dev/null); do
+              gh issue close "$n" -R $ALERT_REPO -c "Receipts flowing again (run #${{ github.run_number }})." || true
             done
           fi
 
@@ -138,16 +141,16 @@ jobs:
         run: |
           if grep -q "PUSH_CHANNEL_SILENT" pipeline.log 2>/dev/null; then
             detail=$(grep -m1 "PUSH_CHANNEL_SILENT" pipeline.log)
-            open=$(gh issue list -R ${{ github.repository }} --state open --search "Push channel silent in:title" --json number --jq 'length' || echo 1)
+            open=$(gh issue list -R $ALERT_REPO --state open --search "Push channel silent in:title" --json number --jq 'length' || echo 1)
             if [ "$open" = "0" ]; then
-              gh issue create -R ${{ github.repository }} \
+              gh issue create -R $ALERT_REPO \
                 --title "🔇 Push channel silent" \
                 --body "$detail — a channel that quiet for 48h across all users is broken, not calm. Check gates/supply for it. Auto-closes when it sends again." || true
               node _ops/scripts/ops-alert.mjs "Push channel silent" "$detail" || true
             fi
           else
-            for n in $(gh issue list -R ${{ github.repository }} --state open --search "Push channel silent in:title" --json number --jq '.[].number' 2>/dev/null); do
-              gh issue close "$n" -R ${{ github.repository }} -c "All channels sending again (run #${{ github.run_number }})." || true
+            for n in $(gh issue list -R $ALERT_REPO --state open --search "Push channel silent in:title" --json number --jq '.[].number' 2>/dev/null); do
+              gh issue close "$n" -R $ALERT_REPO -c "All channels sending again (run #${{ github.run_number }})." || true
             done
           fi
 
@@ -175,6 +178,7 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       ALERT_USER_ID: ${{ secrets.ALERT_USER_ID }}
+      ALERT_REPO: Aramide-TechExpert/Cluster
     steps:
       - uses: actions/checkout@v4 # ops-alert script
 
@@ -189,9 +193,9 @@ jobs:
               --jq '[.workflow_runs[].conclusion] | map(select(. == "failure")) | length' 2>/dev/null || echo 0)
             if [ "$prev" = "2" ]; then
               echo "3 consecutive failures — halting chain (cron remains as restart insurance)."
-              open=$(gh issue list -R ${{ github.repository }} --state open --search "Pipeline halted in:title" --json number --jq 'length' || echo 1)
+              open=$(gh issue list -R $ALERT_REPO --state open --search "Pipeline halted in:title" --json number --jq 'length' || echo 1)
               if [ "$open" = "0" ]; then
-                gh issue create -R ${{ github.repository }} \
+                gh issue create -R $ALERT_REPO \
                   --title "🚨 Pipeline halted: 3 consecutive failures" \
                   --body "Even the last-good rollback is failing — likely infra (Supabase/secrets/GitHub), not code. Chain stopped; cron slots keep retrying. This issue auto-closes when a run goes green." || true
                 node scripts/ops-alert.mjs "Pipeline HALTED" "News and alerts are down — 3 failed runs in a row, rollback included. Needs attention." || true

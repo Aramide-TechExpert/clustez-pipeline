@@ -1,0 +1,80 @@
+# TEMP (News Signal rename): register the com.newssignal.app iOS + Android apps in
+# the Firebase project and emit their client config files as an artifact.
+# Deleted after one successful run.
+name: firebase-apps
+on:
+  workflow_dispatch: {}
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create apps + fetch configs
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          node -e '
+          const crypto = require("crypto"), fs = require("fs");
+          const sa = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8"));
+          const b64 = o => Buffer.from(JSON.stringify(o)).toString("base64url");
+          const now = Math.floor(Date.now() / 1000);
+          const header = b64({ alg: "RS256", typ: "JWT" });
+          const claims = b64({
+            iss: sa.client_email,
+            scope: "https://www.googleapis.com/auth/cloud-platform",
+            aud: "https://oauth2.googleapis.com/token",
+            iat: now, exp: now + 3600,
+          });
+          const sig = crypto.sign("RSA-SHA256", Buffer.from(header + "." + claims), sa.private_key).toString("base64url");
+          const project = sa.project_id;
+          (async () => {
+            const tr = await fetch("https://oauth2.googleapis.com/token", {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=" + header + "." + claims + "." + sig,
+            });
+            const { access_token } = await tr.json();
+            if (!access_token) { console.error("token exchange failed:", tr.status); process.exit(1); }
+            const H = { Authorization: "Bearer " + access_token, "Content-Type": "application/json" };
+            const api = "https://firebase.googleapis.com/v1beta1";
+
+            async function waitOp(name) {
+              for (let i = 0; i < 30; i++) {
+                const r = await fetch(api + "/" + name, { headers: H });
+                const op = await r.json();
+                if (op.done) {
+                  if (op.error) throw new Error("operation failed: " + JSON.stringify(op.error));
+                  return op.response;
+                }
+                await new Promise(res => setTimeout(res, 2000));
+              }
+              throw new Error("operation timed out: " + name);
+            }
+
+            async function ensureApp(kind, body, matchKey, matchVal) {
+              // Idempotent: reuse an existing registration if present.
+              const list = await (await fetch(`${api}/projects/${project}/${kind}?pageSize=100`, { headers: H })).json();
+              const existing = (list.apps || []).find(a => a[matchKey] === matchVal);
+              if (existing) { console.log(kind, "already registered:", existing.appId); return existing.appId; }
+              const r = await fetch(`${api}/projects/${project}/${kind}`, { method: "POST", headers: H, body: JSON.stringify(body) });
+              if (!r.ok) throw new Error(`${kind} create failed ${r.status}: ${await r.text()}`);
+              const resp = await waitOp((await r.json()).name);
+              console.log(kind, "created:", resp.appId);
+              return resp.appId;
+            }
+
+            const iosId = await ensureApp("iosApps", { displayName: "News Signal iOS", bundleId: "com.newssignal.app" }, "bundleId", "com.newssignal.app");
+            const andId = await ensureApp("androidApps", { displayName: "News Signal Android", packageName: "com.newssignal.app" }, "packageName", "com.newssignal.app");
+
+            fs.mkdirSync("out", { recursive: true });
+            for (const [kind, id, file] of [["iosApps", iosId, "GoogleService-Info.plist"], ["androidApps", andId, "google-services.json"]]) {
+              const cfg = await (await fetch(`${api}/projects/${project}/${kind}/${id}/config`, { headers: H })).json();
+              fs.writeFileSync("out/" + file, Buffer.from(cfg.configFileContents, "base64"));
+              console.log("wrote", file);
+            }
+          })().catch(e => { console.error(e.message); process.exit(1); });
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: newssignal-firebase-configs
+          path: out/

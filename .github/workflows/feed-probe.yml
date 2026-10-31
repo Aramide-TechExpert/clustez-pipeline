@@ -1,0 +1,24 @@
+# TEMP: probe major-outlet feeds from an Actions runner (datacenter IP) to
+# test whether Bing News RSS serves runners the same items it serves
+# residential IPs. Deleted after one run.
+name: feed-probe
+on:
+  workflow_dispatch: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe feeds
+        run: |
+          for u in \
+            "https://www.bing.com/news/search?q=site:cnn.com&format=rss" \
+            "https://www.bing.com/news/search?q=site:apnews.com&format=rss" \
+            "https://www.bing.com/news/search?q=site:reuters.com&format=rss" \
+            "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"; do
+            body=$(curl -s -L --compressed -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --max-time 20 "$u")
+            n=$(echo "$body" | grep -oc "<item>" || true)
+            code=$(curl -s -o /dev/null -w "%{http_code}" -L --compressed -A "Mozilla/5.0" --max-time 20 "$u")
+            echo "PROBE items=$n http=$code url=${u:0:60}"
+            [ "$n" = "0" ] && echo "$body" | head -c 400 && echo ""
+          done

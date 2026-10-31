@@ -1,19 +1,21 @@
-# TEMP v4: run the NEW ingest lanes (GDELT domain batches + CNN sitemap)
-# from a runner against the real Cluster code. No DB involved. Deleted after.
+# TEMP v5: GDELT query-syntax variants, 6s apart. Deleted after.
 name: feed-probe
 on:
   workflow_dispatch: {}
 jobs:
-  lanes:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: Aramide-TechExpert/Cluster
-          token: ${{ secrets.CLUSTER_TOKEN }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: node --import tsx scripts/lane_check_tmp.ts
+      - name: Try variants
+        run: |
+          q() {
+            sleep 6
+            body=$(curl -s --max-time 20 "https://api.gdeltproject.org/api/v2/doc/doc?mode=ArtList&format=JSON&maxrecords=5&sort=DateDesc&query=$1")
+            n=$(echo "$body" | grep -oc '"url"' || true)
+            echo "VARIANT $2 -> articles=$n  head=$(echo "$body" | head -c 80)"
+          }
+          q "domainis%3Aapnews.com%20sourcelang%3Aeng" "A:domainis+implicit"
+          q "domainis%3Aapnews.com" "B:domainis-alone"
+          q "sourcelang%3Aeng%20AND%20(domainis%3Aapnews.com%20OR%20domainis%3Areuters.com)" "C:AND+OR-group"
+          q "(domainis%3Aapnews.com%20OR%20domainis%3Areuters.com)%20sourcelang%3Aeng" "D:group-first"

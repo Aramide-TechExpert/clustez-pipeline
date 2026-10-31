@@ -1,4 +1,4 @@
-# TEMP v2: probe REPLACEMENT candidates for the Bing-proxied majors from a
+# TEMP v3: find working news-sitemap URLs for AP / Reuters / WaPo from a
 # runner IP. Deleted after one run.
 name: feed-probe
 on:
@@ -6,20 +6,22 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - name: Probe candidates
         run: |
           probe() {
-            body=$(curl -s -L --compressed -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36" --max-time 20 "$1")
-            items=$(echo "$body" | grep -oc "<item>" || true)
-            locs=$(echo "$body" | grep -oc "<loc>" || true)
-            echo "PROBE items=$items locs=$locs url=$1"
-            echo "$body" | grep -oE "<link>[^<]{0,110}|<loc>[^<]{0,110}" | sed -n '2,3p'
+            code=$(curl -s -o /tmp/b -w "%{http_code}" -L --compressed -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36" --max-time 20 "$1")
+            locs=$(grep -oc "<loc>" /tmp/b || true)
+            news=$(grep -oc "news:title" /tmp/b || true)
+            echo "PROBE http=$code locs=$locs newsTags=$news url=$1"
           }
-          probe "https://news.google.com/rss/search?q=site:cnn.com&hl=en-US&gl=US&ceid=US:en"
-          probe "https://news.google.com/rss/search?q=site:reuters.com&hl=en-US&gl=US&ceid=US:en"
-          probe "https://www.cnn.com/sitemap/news.xml"
-          probe "https://apnews.com/news-sitemap-content.xml"
-          probe "https://www.reuters.com/arc/outboundfeeds/news-sitemap-index/?outputType=xml"
-          probe "https://www.washingtonpost.com/sitemaps/news.xml"
+          probe "https://apnews.com/sitemap/google-news-sitemap/sitemap-google-news.xml"
+          probe "https://apnews.com/google-news-sitemap.xml"
+          probe "https://apnews.com/sitemap-news.xml"
+          probe "https://apnews.com/sitemap/sitemap-google-news.xml"
+          probe "https://www.reuters.com/arc/outboundfeeds/news-sitemap/?outputType=xml"
+          probe "https://www.reuters.com/sitemap_news_index1.xml"
+          probe "https://www.washingtonpost.com/news-sitemap-index.xml"
+          probe "https://www.washingtonpost.com/sitemaps/news-sitemap.xml"
+          probe "https://edition.cnn.com/sitemap/news.xml"

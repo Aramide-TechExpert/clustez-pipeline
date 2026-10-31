@@ -1,43 +1,32 @@
-# TEMP v7: fetch discovered news sitemaps (do they SERVE to runners?) +
-# finish robots discovery + GDELT domain: syntax. Deleted after.
+# TEMP v8: full-roster news-sitemap discovery. For each domain: read
+# robots.txt, pick the best news-looking sitemap, fetch it (following one
+# index level), report OK lines with loc counts. Deleted after one run.
 name: feed-probe
 on:
   workflow_dispatch: {}
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Fetch sitemaps
+      - name: Discover
         run: |
           set +e
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
-          smap() {
-            code=$(curl -s -o /tmp/b -w "%{http_code}" -L --compressed -A "$UA" --max-time 15 "$1")
-            case "$1" in *.gz) gunzip -c /tmp/b > /tmp/b2 2>/dev/null && mv /tmp/b2 /tmp/b;; esac
-            locs=$(grep -oc "<loc>" /tmp/b); news=$(grep -oc "news:title" /tmp/b)
-            echo "SMAP http=$code locs=$locs news=$news $1"
-          }
-          smap "https://apnews.com/news-sitemap-content.xml"
-          smap "https://www.bloomberg.com/sitemaps/news/latest.xml"
-          smap "https://www.wsj.com/wsjsitemaps/wsj_google_news.xml"
-          smap "https://www.usatoday.com/news-sitemap.xml"
-          smap "https://www.ms.now/news-sitemap.xml"
-          smap "https://www.si.com/news-sitemap.xml"
-          smap "https://bleacherreport.com/sitemaps/google-news"
-          smap "https://ew.com/google-news-sitemap.xml"
-          smap "https://people.com/google-news-sitemap.xml"
-          smap "https://www.espn.com/sitemap.xml"
-          smap "https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz"
-      - name: Finish robots + gdelt
-        run: |
-          set +e
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          for d in sabcnews.com ewn.co.za snl24.com dailyinvestor.com news18.com republicworld.com washingtonexaminer.com hollywoodreporter.com enca.com; do
-            code=$(curl -s -o /tmp/r -w "%{http_code}" -L --compressed -A "$UA" --max-time 12 "https://$d/robots.txt")
-            maps=$(grep -iE "^sitemap:" /tmp/r | head -3 | tr '\n' ' ')
-            echo "ROBOTS $d http=$code $maps"
-          done
-          sleep 8
-          b=$(curl -s --max-time 20 "https://api.gdeltproject.org/api/v2/doc/doc?mode=ArtList&format=JSON&maxrecords=5&sort=DateDesc&query=domain%3Aapnews.com%20sourcelang%3Aeng")
-          echo "GDELT-E -> $(echo "$b" | grep -oc '"url"') | $(echo "$b" | head -c 70)"
+          fetch() { curl -s -L --compressed -A "$UA" --max-time 10 "$1"; }
+          count_news() { grep -oc "news:title" <<< "$1"; }
+          while read -r d; do
+            robots=$(fetch "https://$d/robots.txt")
+            cand=$(grep -ioE "^sitemap: *\S+" <<< "$robots" | awk '{print $2}' | grep -iE "news|google" | head -1)
+            [ -z "$cand" ] && cand=$(grep -ioE "^sitemap: *\S+" <<< "$robots" | awk '{print $2}' | head -1)
+            [ -z "$cand" ] && { echo "MISS $d no-sitemap"; continue; }
+            body=$(fetch "$cand")
+            if grep -q "<sitemapindex" <<< "$body"; then
+              child=$(grep -oE "<loc>[^<]+" <<< "$body" | sed 's/<loc>//' | grep -iE "news|google" | head -1)
+              [ -z "$child" ] && child=$(grep -oE "<loc>[^<]+" <<< "$body" | sed 's/<loc>//' | head -1)
+              [ -n "$child" ] && { cand="$child"; body=$(fetch "$cand"); }
+            fi
+            n=$(count_news "$body"); locs=$(grep -oc "<loc>" <<< "$body")
+            if [ "${n:-0}" -ge 5 ]; then echo "OK $d $cand news=$n"
+            else echo "MISS $d cand=$cand locs=$locs news=$n"; fi
+          done < domains.txt

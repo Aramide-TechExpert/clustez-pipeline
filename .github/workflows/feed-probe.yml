@@ -1,21 +1,27 @@
-# TEMP v5: GDELT query-syntax variants, 6s apart. Deleted after.
+# TEMP v6: discover news-sitemap URLs via robots.txt for the major
+# Bing-orphaned outlets + final GDELT domain: syntax check. Deleted after.
 name: feed-probe
 on:
   workflow_dispatch: {}
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Try variants
+      - name: Robots sitemap discovery
         run: |
-          q() {
-            sleep 6
-            body=$(curl -s --max-time 20 "https://api.gdeltproject.org/api/v2/doc/doc?mode=ArtList&format=JSON&maxrecords=5&sort=DateDesc&query=$1")
-            n=$(echo "$body" | grep -oc '"url"' || true)
-            echo "VARIANT $2 -> articles=$n  head=$(echo "$body" | head -c 80)"
-          }
-          q "domainis%3Aapnews.com%20sourcelang%3Aeng" "A:domainis+implicit"
-          q "domainis%3Aapnews.com" "B:domainis-alone"
-          q "sourcelang%3Aeng%20AND%20(domainis%3Aapnews.com%20OR%20domainis%3Areuters.com)" "C:AND+OR-group"
-          q "(domainis%3Aapnews.com%20OR%20domainis%3Areuters.com)%20sourcelang%3Aeng" "D:group-first"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+          for d in apnews.com reuters.com washingtonpost.com bloomberg.com wsj.com usatoday.com msnbc.com politico.com espn.com si.com bleacherreport.com hollywoodreporter.com ew.com people.com enca.com sabcnews.com ewn.co.za snl24.com dailyinvestor.com news18.com republicworld.com washingtonexaminer.com; do
+            code=$(curl -s -o /tmp/r -w "%{http_code}" -L --compressed -A "$UA" --max-time 12 "https://$d/robots.txt")
+            maps=$(grep -iE "^sitemap:" /tmp/r | grep -iE "news|google" | head -2 | tr '\n' ' ')
+            [ -z "$maps" ] && maps=$(grep -iE "^sitemap:" /tmp/r | head -1 | tr '\n' ' ')
+            echo "ROBOTS $d http=$code $maps"
+          done
+      - name: GDELT domain syntax
+        run: |
+          sleep 8
+          b=$(curl -s --max-time 20 "https://api.gdeltproject.org/api/v2/doc/doc?mode=ArtList&format=JSON&maxrecords=5&sort=DateDesc&query=domain%3Aapnews.com%20sourcelang%3Aeng")
+          echo "GDELT-E domain:single -> $(echo "$b" | grep -oc '"url"') | $(echo "$b" | head -c 70)"
+          sleep 8
+          b=$(curl -s --max-time 20 "https://api.gdeltproject.org/api/v2/doc/doc?mode=ArtList&format=JSON&maxrecords=5&sort=DateDesc&query=(domain%3Aapnews.com%20OR%20domain%3Areuters.com)%20sourcelang%3Aeng")
+          echo "GDELT-F domain:group -> $(echo "$b" | grep -oc '"url"') | $(echo "$b" | head -c 70)"

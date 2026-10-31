@@ -1,27 +1,19 @@
-# TEMP v3: find working news-sitemap URLs for AP / Reuters / WaPo from a
-# runner IP. Deleted after one run.
+# TEMP v4: run the NEW ingest lanes (GDELT domain batches + CNN sitemap)
+# from a runner against the real Cluster code. No DB involved. Deleted after.
 name: feed-probe
 on:
   workflow_dispatch: {}
 jobs:
-  probe:
+  lanes:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
-      - name: Probe candidates
-        run: |
-          probe() {
-            code=$(curl -s -o /tmp/b -w "%{http_code}" -L --compressed -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36" --max-time 20 "$1")
-            locs=$(grep -oc "<loc>" /tmp/b || true)
-            news=$(grep -oc "news:title" /tmp/b || true)
-            echo "PROBE http=$code locs=$locs newsTags=$news url=$1"
-          }
-          probe "https://apnews.com/sitemap/google-news-sitemap/sitemap-google-news.xml"
-          probe "https://apnews.com/google-news-sitemap.xml"
-          probe "https://apnews.com/sitemap-news.xml"
-          probe "https://apnews.com/sitemap/sitemap-google-news.xml"
-          probe "https://www.reuters.com/arc/outboundfeeds/news-sitemap/?outputType=xml"
-          probe "https://www.reuters.com/sitemap_news_index1.xml"
-          probe "https://www.washingtonpost.com/news-sitemap-index.xml"
-          probe "https://www.washingtonpost.com/sitemaps/news-sitemap.xml"
-          probe "https://edition.cnn.com/sitemap/news.xml"
+      - uses: actions/checkout@v4
+        with:
+          repository: Aramide-TechExpert/Cluster
+          token: ${{ secrets.CLUSTER_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: node --import tsx scripts/lane_check_tmp.ts

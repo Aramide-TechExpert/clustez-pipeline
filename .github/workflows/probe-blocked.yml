@@ -1,0 +1,56 @@
+# TEMP one-shot probe (deleted after reading the log): Forbes lanes + a
+# re-attack on the six hard-blocked majors from a datacenter IP, testing
+# angles not tried on 2026-10-31 — browser UA, Reuters' never-fetched
+# news-sitemap-index, WaPo's .gz with decompression, ESPN/Politico RSS.
+name: probe-blocked
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe
+        run: |
+          set +e
+          CUA="Clustez/0.1 (+https://clustez.vercel.app; news aggregator)"
+          BUA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          probe() { # label url ua
+            body=$(curl -s --compressed -m 20 -A "$3" "$2")
+            code=$(curl -s --compressed -m 20 -A "$3" -o /dev/null -w '%{http_code}' "$2")
+            news=$(echo "$body" | grep -c '<news:title>')
+            locs=$(echo "$body" | grep -c '<loc>')
+            items=$(echo "$body" | grep -c '<item>')
+            echo "PROBE $1 http=$code locs=$locs news=$news items=$items bytes=${#body} :: $2"
+          }
+          echo "===== FORBES ====="
+          curl -s --compressed -m 15 -A "$BUA" https://www.forbes.com/robots.txt | grep -i sitemap | head -5
+          probe forbes-newssmap https://www.forbes.com/news_sitemap.xml "$CUA"
+          probe forbes-newssmap-bua https://www.forbes.com/news_sitemap.xml "$BUA"
+          probe forbes-rss-mostpop https://www.forbes.com/most-popular/feed/ "$CUA"
+          probe forbes-rss-realtime https://www.forbes.com/real-time/feed2/ "$CUA"
+          probe forbes-rss-business https://www.forbes.com/business/feed/ "$CUA"
+          echo "===== AP ====="
+          probe ap-newscontent https://apnews.com/news-sitemap-content.xml "$CUA"
+          probe ap-newscontent-bua https://apnews.com/news-sitemap-content.xml "$BUA"
+          probe ap-index https://apnews.com/ap-sitemap.xml "$BUA"
+          echo "===== REUTERS ====="
+          probe reuters-newsidx "https://www.reuters.com/arc/outboundfeeds/news-sitemap-index/?outputType=xml" "$CUA"
+          probe reuters-newsidx-bua "https://www.reuters.com/arc/outboundfeeds/news-sitemap-index/?outputType=xml" "$BUA"
+          child=$(curl -s --compressed -m 20 -A "$BUA" "https://www.reuters.com/arc/outboundfeeds/news-sitemap-index/?outputType=xml" | grep -o '<loc>[^<]*</loc>' | head -1 | sed 's/<[^>]*>//g')
+          echo "reuters child: $child"
+          [ -n "$child" ] && probe reuters-child "$child" "$BUA"
+          echo "===== WAPO ====="
+          code=$(curl -s -m 20 -A "$BUA" -o /tmp/wapo.gz -w '%{http_code}' https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz)
+          news=$(gunzip -c /tmp/wapo.gz 2>/dev/null | grep -c '<news:title>')
+          echo "PROBE wapo-gz http=$code news=$news bytes=$(wc -c < /tmp/wapo.gz)"
+          echo "===== USA TODAY ====="
+          probe usat-news https://www.usatoday.com/news-sitemap.xml "$BUA"
+          echo "===== ESPN ====="
+          probe espn-rss https://www.espn.com/espn/rss/news "$CUA"
+          probe espn-rss-bua https://www.espn.com/espn/rss/news "$BUA"
+          probe espn-sitemap https://www.espn.com/sitemap.xml "$BUA"
+          echo "===== POLITICO ====="
+          probe politico-rss https://rss.politico.com/politics-news.xml "$CUA"
+          probe politico-rss2 https://www.politico.com/rss/politicopicks.xml "$CUA"
+          probe politico-newssmap https://www.politico.com/sitemap/news.xml "$BUA"
+          exit 0

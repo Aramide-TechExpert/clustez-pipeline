@@ -1,0 +1,13 @@
+name: probe-wapo
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          set +e
+          for u in https://feeds.washingtonpost.com/rss/national https://feeds.washingtonpost.com/rss/world https://feeds.washingtonpost.com/rss/politics https://feeds.washingtonpost.com/rss/business; do
+            body=$(curl -sL --compressed -m 20 "$u")
+            echo "PROBE $u http=$(curl -sL --compressed -m 20 -o /dev/null -w '%{http_code}' "$u") items=$(echo "$body" | grep -oc '<item>')"
+          done
